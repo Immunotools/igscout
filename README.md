@@ -1,5 +1,5 @@
 # igscout
-A tool for de novo inference of D genes using Rep-seq data; analysis of CDR3 diversity; finding VDDJ recombination
+A tool for de novo inference of D and J genes using Rep-seq data; analysis of CDR3 diversity; finding VDDJ recombination
 
 Usage:
 
