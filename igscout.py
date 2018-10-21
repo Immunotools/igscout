@@ -16,6 +16,8 @@ import numpy as np
 ############################
 def ReadFasta(fasta_fname):
     records = []
+    if not os.path.exists(fasta_fname) or fasta_fname == '':
+        return records
     for r in SeqIO.parse(fasta_fname, 'fasta'):
         r.seq = str(r.seq).upper()
         records.append(r)
@@ -355,7 +357,6 @@ class SeqLogoConstructor:
         self.freq_dicts = self.freq_dicts[start_pos : end_pos]
 
         k = len(self.kmer)
-#        self.min_cons = 0.45
         print '== Start'
         used_cdr3s = set()
         kmer = self.primary_ext[ : k]
@@ -646,91 +647,135 @@ def OutputNovelSegments(segments, output_fname):
     print "Novel segments were written to " + output_fname
 
 ############################
-def FilterDeNovoSegment(new_segment, previous_segments):
-    if new_segment.ToFilter():
-        return True
-    pref = new_segment.extension[ : len(new_segment.extension) - 1]
-    suff = new_segment.extension[1 : ]
-    for segment in previous_segments:
-        if segment.extension.find(pref) != -1 or segment.extension.find(suff) != -1:
-            return True
-    return False
+class IgScout:
+    def __init__(self, cdr3s, d_genes, params):
+        self.cdr3s = cdr3s
+        self.d_genes = d_genes
+        self.params = params
+        self._InitAlgorithm()
 
-def OutputNotUsedCDR3s(cdr3s, forbidden_indices, output_fname):
-    fh = open(output_fname, 'w')
-    for i in range(len(cdr3s)):
-        if i in forbidden_indices:
-            continue
-        fh.write('>' + cdr3s[i].id + '\n')
-        fh.write(cdr3s[i].seq + '\n')
-    fh.close() 
+    def _InitAlgorithm(self):
+        self.kmer_ranks = KmerRanks(self.cdr3s, self.params.k)
+        self.de_novo_segments = []
+        self.de_novo_candidates = []
+        self.forbidden_indices = set()
+#        self.ranks_were_changed = True
+        self.used_kmers = set()
+        self.not_extended_kmers = set()
+        self.num_iter = 1
+        self.params.min_cons_size = int(float(len(self.cdr3s)) * self.params.cons_frac)
+        print "Minimal k-mer multiplicity: " + str(self.params.min_cons_size)
+
+    def _FilterDeNovoSegment(self, de_novo_candidate):
+        if de_novo_candidate.ToFilter():
+            return True
+        pref = de_novo_candidate.extension[ : len(de_novo_candidate.extension) - 1]
+        suff = de_novo_candidate.extension[1 : ]
+        for segment in self.de_novo_candidates:
+            if segment.extension.find(pref) != -1 or segment.extension.find(suff) != -1:
+                return True
+        return False
+
+    def _ReconstructRanks(self, seq_logo):
+        analyzed_indices = seq_logo.GetUsedCDR3s()
+        for ind in analyzed_indices:
+            self.forbidden_indices.add(ind)
+        print "Reconstructing ranks..."
+        self.kmer_ranks = KmerRanks(self.cdr3s, self.params.k, self.forbidden_indices)
+
+    def _AddNewInferredCandidate(self, de_novo_candidate, top_kmer, seq_logo):
+        new_segment = DeNovoSegment(len(self.de_novo_segments), top_kmer, de_novo_candidate.Seq(), seq_logo.NumUsedCDR3s(), seq_logo.LeftExtLength(), seq_logo.RightExtLength())
+        self.de_novo_segments.append(new_segment)
+
+    def _OutputMultiplicityMatrices(self):
+        if not params.output_plots:
+            return
+        kmer_matrix_output = MultiplicityMatrix(self.d_genes, self.kmer_ranks, self.num_iter, self.used_kmers, self.params.output_dir)
+        kmer_matrix_output.OutputMatrices()
+
+    def Run(self):
+        while True:
+            self._OutputMultiplicityMatrices()
+            top_kmer = self.kmer_ranks.GetMostAbundantKmer()
+            print "\n== " + str(self.num_iter) + ": analyzing " + top_kmer + ", mult: " + str(self.kmer_ranks.GetKmerMult(top_kmer))
+            self.used_kmers.add(top_kmer)
+            seq_logo = SeqLogoConstructor(top_kmer, self.kmer_ranks, self.params, self.de_novo_candidates)
+            de_novo_candidate = seq_logo.ComputeAdvancedExtension()
+            segment_was_filtered = True
+            if not self._FilterDeNovoSegment(de_novo_candidate):
+                print "Segment does not represent inexact substring of other segment"
+                self.de_novo_candidates.append(de_novo_candidate)
+                segment_was_filtered = False
+            if de_novo_candidate.Empty():
+                print "Algorithm ends: " + top_kmer + " is supported by less than " + str(params.min_cons_size) + ' sequences'
+                break
+            if de_novo_candidate.NotExtended():
+                self.not_extended_kmers.add(top_kmer)
+            ### reconstructing ranks
+            self._ReconstructRanks(seq_logo)
+            ### writing new segment
+            if not segment_was_filtered:
+                self._AddNewInferredCandidate(de_novo_candidate, top_kmer, seq_logo)
+            self.num_iter += 1
+        print str(len(self.de_novo_segments)) + ' segments were reconstructed de novo'
+        print str(len(self.not_extended_kmers)) + ' out of ' + str(len(self.de_novo_segments)) + ' were not extended'
+
+    def GetInferredSegments(self):
+        return self.de_novo_segments
+
+    def OutputNotUsedCDR3s(self, output_fname):
+        fh = open(output_fname, 'w')
+        for i in range(len(self.cdr3s)):
+            if i in self.forbidden_indices:
+                continue
+            fh.write('>' + self.cdr3s[i].id + '\n')
+            fh.write(self.cdr3s[i].seq + '\n')
+        fh.close()
+
+############################
+def OutputMultiplicityMatrices(d_genes, kmer_ranks, num_iter, used_kmers, params):
+    if not params.output_plots:
+        return 
+    kmer_matrix_output = MultiplicityMatrix(d_genes, kmer_ranks, num_iter, used_kmers, params.output_dir)
+    kmer_matrix_output.OutputMatrices()
 
 def main(params):
     PrepareOutputDir(params.output_dir)
     seqs = ReadFasta(params.input_fasta)
     genes = ReadFasta(params.d_fasta)
-    kmer_ranks = KmerRanks(seqs, params.k)
-    de_novo_segments = []
-    de_novo_candidates = []
-    forbidden_indices = set()
-    ranks_were_changed = True
-    used_kmers = set()
-    not_extended_kmers = set()
-    num_iter = 1
-    params.min_cons_size = int(float(len(seqs)) * params.cons_frac)
-    print "Min consensus size: " + str(params.min_cons_size)
-    while True:
-        kmer_matrix_output = MultiplicityMatrix(genes, kmer_ranks, num_iter, used_kmers, params.output_dir)
-        kmer_matrix_output.OutputMatrices()
-        top_kmer = kmer_ranks.GetMostAbundantKmer()
-        print "\n== " + str(num_iter) + ": analyzing " + top_kmer + ", mult: " + str(kmer_ranks.GetKmerMult(top_kmer))
-        used_kmers.add(top_kmer)
-        seq_logo = SeqLogoConstructor(top_kmer, kmer_ranks, params, de_novo_candidates)
-        de_novo_cand = seq_logo.ComputeAdvancedExtension() 
-        segment_was_filtered = True
-        if not FilterDeNovoSegment(de_novo_cand, de_novo_candidates):
-            print "Segment does not represent inexact substring of other segment"
-            de_novo_candidates.append(de_novo_cand)
-            segment_was_filtered = False
-        if de_novo_cand.Empty():
-            print "Algorithm ends: " + top_kmer + " is supported by less than " + str(params.min_cons_size) + ' sequences'
-            break
-        seq_logo.OutputMultipleAlignment(os.path.join(params.output_dir, str(num_iter) + "_" + top_kmer + '.txt'))
-        if de_novo_cand.NotExtended():
-            not_extended_kmers.add(top_kmer)
-#        else:
-#            seq_logo.OutputStats(os.path.join(params.output_dir, str(num_iter) + "_" + de_novo_cand.Seq() + '.pdf'))
-        ### reconstructing ranks
-        analyzed_ind = seq_logo.GetUsedCDR3s() #kmer_ranks.GetKmerIndices(top_kmer)
-        for ind in analyzed_ind:
-            forbidden_indices.add(ind)
-        print "Reconstructing ranks..."
-        kmer_ranks = KmerRanks(seqs, params.k, forbidden_indices)
-        ### writing new segment
-        if not segment_was_filtered:
-            segment = DeNovoSegment(len(de_novo_segments), top_kmer, de_novo_cand.Seq(), seq_logo.NumUsedCDR3s(), seq_logo.LeftExtLength(), seq_logo.RightExtLength())
-            de_novo_segments.append(segment)
-        ranks_were_changed = True
-        continue_algorithm = seq_logo.Continue()
-        num_iter += 1
-
-    print str(len(de_novo_segments)) + ' segments were reconstructed de novo'
-    print str(len(not_extended_kmers)) + ' out of ' + str(len(de_novo_segments)) + ' were not extended'
+    if len(genes) == 0:
+        if params.output_plots:
+            print "WARN: Known D genes were not specified, drawing multiplicity plots will be skipped"
+        params.output_plots = False
+    igscout = IgScout(seqs, genes, params)
+    igscout.Run()
+    de_novo_segments = igscout.GetInferredSegments()
     OutputNovelSegments(de_novo_segments, os.path.join(params.output_dir, "de_novo_segments.fasta"))
-    OutputNotUsedCDR3s(seqs, forbidden_indices, os.path.join(params.output_dir, 'non_used_cdr3s.fasta'))
+    igscout.OutputNotUsedCDR3s(os.path.join(params.output_dir, 'non_used_cdr3s.fasta'))
 
 ###############################################
+def PrintUsage():
+    print "python igscout.py -i cdr3s.fasta -k KMER_SIZE -o output_dir"
+
 class Params:
-    long_opt = ['output=', 'd-genes=', 'input=', 'min-cons-size=', 'le=', 're=', 'cons=']
-    short_opt = 'k:o:i:c:d:e:'
+    long_opt = ['output=', 'd-genes=', 'input=', 'fraction=', 'le=', 're=', 'ic=', 'skip-plots']
+    short_opt = 'k:o:i:f:d:e:h:'
 
     def __init__(self, argv):
-        options, args = getopt.getopt(argv[1:], self.short_opt, self.long_opt)
-        print options
         self.left_ext_len = 1
         self.right_ext_len = 1
         self.cons_frac = 0.001
         self.min_conservation = 0.5
+        self.output_plots = True
+        self.d_fasta = ''
+        self._ParseParams(argv)
+
+    def _ParseParams(self, argv):
+        options, args = getopt.getopt(argv[1:], self.short_opt, self.long_opt)
+        if len(options) == 0:
+            PrintUsage()
+            sys.exit(1)
+        print options
         for opt, arg in options:
             if opt in ('-o', '--output'):
                 self.output_dir = arg
@@ -740,9 +785,8 @@ class Params:
                 self.k = int(arg)
             elif opt in ('-d', '--d-genes'):
                 self.d_fasta = arg
-            elif opt in ('-c', '--min-cons-size'):
+            elif opt in ('-f', '--fraction'):
                 self.cons_frac = float(arg)
-                self.min_cons_size = 0 #int(arg)
             elif opt == '--le':
                 self.left_ext_len = int(arg)
             elif opt == '--re':
@@ -750,8 +794,12 @@ class Params:
             elif opt == '-e':
                 self.left_ext_len = int(arg)
                 self.right_ext_len = int(arg)
-            elif opt == '--cons':
+            elif opt == '--ic':
                 self.min_conservation = float(arg)
+            elif opt == '--skip-plots':
+                self.output_plots = False
+            elif opt == '-h':
+                PrintUsage()
             else:
                 print "Invalid option: " + opt
 
