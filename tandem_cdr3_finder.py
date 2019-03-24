@@ -475,7 +475,9 @@ output_dir = sys.argv[3]
 if os.path.exists(output_dir):
     shutil.rmtree(output_dir)
 os.mkdir(output_dir)
-label = sys.argv[4]
+label = ''
+if len(sys.argv) == 5:
+    label = sys.argv[4]
 all_counts = []
 
 all_ds = GetAllDs(d_genes)

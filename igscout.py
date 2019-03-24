@@ -7,6 +7,7 @@ import getopt
 from Bio import SeqIO
 
 import matplotlib as mplt
+mplt.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
@@ -271,7 +272,15 @@ class SeqLogoConstructor:
     def GetNumConsensusSeq(self):
         return len(self.good_subseqs)
 
+    def _KmerIsArtificial(self):
+        if self.kmer == 'A' * len(self.kmer) or self.kmer == 'C' * len(self.kmer) or self.kmer == 'G' * len(self.kmer) or self.kmer == 'T' * len(self.kmer):
+            return True
+        tac_str = 'TAC' * len(self.kmer)
+        return self.kmer == tac_str[ : len(self.kmer)] or self.kmer == tac_str[1 : len(self.kmer) + 1] or self.kmer == tac_str[2 : len(self.kmer) + 2]
+
     def _IsExtendable(self):
+        if self._KmerIsArtificial():
+            return False
         return len(self.good_subseqs) >= self.num_consensus_seq
         
     def ComputeLeftRightExtensions(self, conservations, max_left_ext, query_len):
@@ -370,7 +379,7 @@ class SeqLogoConstructor:
                 #if ind in self.good_seq_indices or ind in used_cdr3s:
                 #    continue
                 index = self.small_kmer_ranks.GetSequenceByIndex(ind).seq.index(kmer)
-                if index != 0:
+                if index != 0 and self.small_kmer_ranks.GetSequenceByIndex(ind).seq[index - 1] in freq_dict:
                     freq_dict[self.small_kmer_ranks.GetSequenceByIndex(ind).seq[index - 1]] += 1
                 used_cdr3s.add(ind)
             num_cdr3s = float(sum(freq_dict.values()))
@@ -407,7 +416,7 @@ class SeqLogoConstructor:
                 #if ind in self.good_seq_indices or ind in used_cdr3s:
                 #    continue
                 index = self.small_kmer_ranks.GetSequenceByIndex(ind).seq.index(kmer)
-                if index < len(self.small_kmer_ranks.GetSequenceByIndex(ind).seq) - k:
+                if index < len(self.small_kmer_ranks.GetSequenceByIndex(ind).seq) - k and self.small_kmer_ranks.GetSequenceByIndex(ind).seq[index + k] in freq_dict:
                     freq_dict[self.small_kmer_ranks.GetSequenceByIndex(ind).seq[index + k]] += 1
                 used_cdr3s.add(ind)
             num_cdr3s = float(sum(freq_dict.values()))
@@ -663,7 +672,7 @@ class IgScout:
         self.used_kmers = set()
         self.not_extended_kmers = set()
         self.num_iter = 1
-        self.params.min_cons_size = int(float(len(self.cdr3s)) * self.params.cons_frac)
+        self.params.min_cons_size = max(50, int(float(len(self.cdr3s)) * self.params.cons_frac))
         print "Minimal k-mer multiplicity: " + str(self.params.min_cons_size)
 
     def _FilterDeNovoSegment(self, de_novo_candidate):
