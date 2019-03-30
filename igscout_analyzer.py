@@ -87,7 +87,7 @@ class DSegmentClassifier:
         best_score = 0
         best_id = ''
         for d in self.d_genes:
-            alignment = pairwise2.align.globalms(d_segment, d.seq, 5, -4, -3, -.1)[0]
+            alignment = pairwise2.align.localms(d_segment, d.seq, 5, -4, -3, -.1)[0]
             if alignment[2] > best_score:
                 best_score = alignment[2]
                 best_alignment = alignment
